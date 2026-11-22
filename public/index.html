@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library circulation desk</title>
+<style>
+:root{--paper:#f2f4f6;--card:#fff;--ink:#14202b;--muted:#5d6b78;--line:#d9dfe4;--stamp:#3a3f9e;--ok:#1f6b47;--bad:#a8241c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 system-ui,"Segoe UI",sans-serif}
+header{background:var(--ink);color:#fff;padding:14px 20px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:space-between}
+h1{margin:0;font:700 20px Georgia,"Times New Roman",serif}
+header label{font-size:13px;color:#c8d1d9;margin-right:8px}
+select,input{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:4px;background:#fff;color:var(--ink)}
+main{max-width:1000px;margin:0 auto;padding:16px}
+nav{display:flex;gap:4px;border-bottom:2px solid var(--ink);margin-bottom:14px}
+nav button{border:0;background:transparent;padding:9px 16px;font:inherit;cursor:pointer;color:var(--muted);border-radius:4px 4px 0 0}
+nav button.on{background:var(--ink);color:#fff}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--stamp);outline-offset:1px}
+#msg{padding:10px 14px;border-radius:4px;margin-bottom:12px;border-left:5px solid}
+#msg.ok{background:#e4f2ea;border-color:var(--ok)}
+#msg.bad{background:#fbe7e5;border-color:var(--bad)}
+.tools{display:flex;gap:8px;margin-bottom:10px}
+.tools input{flex:1;max-width:360px}
+.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:4px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-weight:600;font-size:13px;color:var(--muted);background:#f8f9fa}
+tr:last-child td{border-bottom:0}
+.title{font:600 16px Georgia,serif}
+.sub{color:var(--muted);font-size:13px}
+.act{display:flex;gap:6px;flex-wrap:wrap}
+.act button,.go{border:1px solid var(--ink);background:#fff;color:var(--ink);padding:5px 12px;border-radius:4px;font:inherit;font-size:14px;cursor:pointer}
+.act .main,.go{background:var(--ink);color:#fff}
+.act button:hover{background:var(--paper)}
+.act .main:hover,.go:hover{background:#26384a}
+.stock{font-weight:600}
+.stock.none{color:var(--bad)}
+.stamp{display:inline-block;border:2px solid var(--stamp);color:var(--stamp);padding:1px 8px;border-radius:3px;font-weight:600;letter-spacing:.02em}
+.stamp.late{border-color:var(--bad);color:var(--bad)}
+.empty{padding:22px;color:var(--muted)}
+h2{font:600 18px Georgia,serif;margin:4px 0 10px}
+@media (prefers-reduced-motion:no-preference){#msg{animation:in .18s ease-out}@keyframes in{from{opacity:0}to{opacity:1}}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Library circulation desk</h1>
+  <div><label for="who">Acting as member</label><select id="who"></select></div>
+</header>
+<main>
+  <div id="msg" hidden role="status"></div>
+  <nav>
+    <button id="t-books" class="on">Books</button>
+    <button id="t-loans">My loans</button>
+    <button id="t-queue">Reservation queue</button>
+  </nav>
+
+  <section id="p-books">
+    <div class="tools">
+      <input id="q" type="search" placeholder="Search by title or author" aria-label="Search books">
+      <button class="go" id="find">Search</button>
+    </div>
+    <div class="wrap"><table>
+      <thead><tr><th>Book</th><th>Subject</th><th>Copies free</th><th>Actions</th></tr></thead>
+      <tbody id="books"></tbody>
+    </table></div>
+  </section>
+
+  <section id="p-loans" hidden>
+    <h2 id="loans-h">Open loans</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Book</th><th>Copy</th><th>Issued</th><th>Due</th><th></th></tr></thead>
+      <tbody id="loans"></tbody>
+    </table></div>
+  </section>
+
+  <section id="p-queue" hidden>
+    <h2 id="queue-h">Reservation queue</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Position</th><th>Member</th><th>Reserved on</th><th></th></tr></thead>
+      <tbody id="queue"></tbody>
+    </table></div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let me = null, queueBook = null;
+
+async function api(path, opts) {
+  try {
+    const r = await fetch(path, opts);
+    let body = null; try { body = await r.json(); } catch (e) {}
+    return { ok: r.ok, body };
+  } catch (e) {
+    return { ok: false, body: { error: 'Cannot reach the server. Check that npm run dev is running.' } };
+  }
+}
+const post = (p, b) => api(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+
+function say(text, ok) {
+  const m = $('#msg'); m.textContent = text; m.className = ok ? 'ok' : 'bad'; m.hidden = false;
+  clearTimeout(say.t); say.t = setTimeout(() => m.hidden = true, 7000);
+}
+function show(tab) {
+  for (const t of ['books', 'loans', 'queue']) {
+    $('#p-' + t).hidden = t !== tab; $('#t-' + t).classList.toggle('on', t === tab);
+  }
+  if (tab === 'loans') loadLoans();
+  if (tab === 'queue') loadQueue();
+}
+
+async function loadMembers() {
+  const { ok, body } = await api('/api/members');
+  if (!ok) return say(body?.error || 'Could not load members', false);
+  const sel = $('#who'), keep = me || sel.value;
+  sel.innerHTML = body.map(m =>
+    `<option value="${m.member_id}">${esc(m.name)} (${m.open_loans} of ${m.borrow_limit} loans${m.status !== 'active' ? ', suspended' : ''})</option>`).join('');
+  if (keep) sel.value = keep;
+  me = sel.value;
+}
+
+async function loadBooks() {
+  const { ok, body } = await api('/api/books?search=' + encodeURIComponent($('#q').value.trim()));
+  if (!ok) return say(body?.error || 'Could not load books', false);
+  $('#books').innerHTML = body.length ? body.map(b => {
+    const free = Number(b.copies_available);
+    return `<tr>
+      <td><div class="title">${esc(b.title)}</div><div class="sub">${esc(b.author)}, ${esc(b.publication_year)}</div></td>
+      <td>${esc(b.subject)}</td>
+      <td><span class="stock ${free ? '' : 'none'}">${free} of ${b.total_copies}</span></td>
+      <td><div class="act">
+        <button class="main" data-a="issue" data-id="${b.book_id}">Issue</button>
+        ${free ? '' : `<button data-a="reserve" data-id="${b.book_id}">Reserve</button>`}
+        <button data-a="queue" data-id="${b.book_id}" data-t="${esc(b.title)}">View queue</button>
+      </div></td></tr>`;
+  }).join('') : '<tr><td colspan="4" class="empty">No books match that search.</td></tr>';
+}
+
+async function loadLoans() {
+  if (!me) return;
+  const { ok, body } = await api('/api/members/' + me);
+  if (!ok) return say(body?.error || 'Could not load loans', false);
+  $('#loans-h').textContent = `Open loans for ${body.name} (${body.open_loans} of ${body.borrow_limit})`;
+  const today = new Date().toLocaleDateString('en-CA');
+  $('#loans').innerHTML = body.loans.length ? body.loans.map(l => `<tr>
+    <td class="title">${esc(l.title)}</td><td>${esc(l.barcode)}</td><td>${esc(l.issue_date)}</td>
+    <td><span class="stamp ${l.due_date < today ? 'late' : ''}">${esc(l.due_date)}</span></td>
+    <td><div class="act"><button class="main" data-a="return" data-id="${l.issue_id}">Return</button></div></td></tr>`).join('')
+    : '<tr><td colspan="5" class="empty">No open loans. Issue a book from the Books tab.</td></tr>';
+}
+
+async function loadQueue() {
+  if (!queueBook) {
+    $('#queue-h').textContent = 'Reservation queue';
+    $('#queue').innerHTML = '<tr><td colspan="4" class="empty">Choose View queue on a book to see who is waiting.</td></tr>';
+    return;
+  }
+  const { ok, body } = await api('/api/reservations/book/' + queueBook.id);
+  if (!ok) return say(body?.error || 'Could not load the queue', false);
+  $('#queue-h').textContent = 'Queue for ' + queueBook.title;
+  $('#queue').innerHTML = body.length ? body.map(r => `<tr>
+    <td><span class="stamp">${r.queue_position}</span></td><td>${esc(r.member_name)}</td><td>${esc(String(r.reserved_at).replace('T', ' ').slice(0, 16))}</td>
+    <td>${r.reservation_id && String(r.member_id) === String(me)
+      ? `<div class="act"><button data-a="cancel" data-id="${r.reservation_id}">Cancel reservation</button></div>` : ''}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">Nobody is waiting for this book.</td></tr>';
+}
+
+async function refresh() { await loadMembers(); await loadBooks(); if (!$('#p-loans').hidden) loadLoans(); if (!$('#p-queue').hidden) loadQueue(); }
+
+document.addEventListener('click', async e => {
+  const b = e.target.closest('button[data-a]'); if (!b) return;
+  const id = Number(b.dataset.id), a = b.dataset.a;
+  if (a === 'queue') { queueBook = { id, title: b.dataset.t }; return show('queue'); }
+  let r;
+  if (a === 'issue') {
+    r = await post('/api/loans/issue', { member_id: Number(me), book_id: id });
+    say(r.ok ? `Book issued. Due in ${r.body.due_in_days} days.` : r.body.error, r.ok);
+  } else if (a === 'reserve') {
+    r = await post('/api/reservations', { member_id: Number(me), book_id: id });
+    say(r.ok ? `Reserved. You are number ${r.body.queue_position} in the queue.` : r.body.error, r.ok);
+  } else if (a === 'return') {
+    r = await post('/api/loans/return', { issue_id: id });
+    if (r.ok) {
+      const h = r.body.held_for_reservation;
+      say('Book returned.' + (r.body.overdue_days ? ` It was ${r.body.overdue_days} days overdue.` : '') +
+        (h ? ` The copy is now held for member ${h.member_id}.` : ''), true);
+    } else say(r.body.error, false);
+  } else if (a === 'cancel') {
+    r = await post(`/api/reservations/${id}/cancel`);
+    say(r.ok ? 'Reservation cancelled.' : r.body.error, r.ok);
+  }
+  refresh();
+});
+
+$('#who').addEventListener('change', e => { me = e.target.value; refresh(); });
+$('#find').addEventListener('click', loadBooks);
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') loadBooks(); });
+for (const t of ['books', 'loans', 'queue']) $('#t-' + t).addEventListener('click', () => show(t));
+refresh();
+</script>
+</body>
+</html>
